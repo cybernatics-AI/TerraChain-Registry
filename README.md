@@ -47,7 +47,3 @@ Uses data maps for properties, documents, escrows, and NFT token URIs.
 ## Contributing
 
 Open to contributions. Submit pull requests or issues for proposed changes.
-
-## License
-
-[License information to be added]
