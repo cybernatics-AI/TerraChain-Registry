@@ -1,0 +1,25 @@
+[project]
+name = "terrahub"
+authors = ["Your Name"]
+description = "A decentralized land registry and property management system"
+telemetry = false
+requirements = [
+    "SP2PABAF9FTAJYNFZH93XENAJ8FVY99RRM50D2JG9.nft-trait"
+]
+boot_contracts = ["pox", "costs-v2", "bns"]
+costs_version = 2
+
+[contracts.terrahub]
+path = "contracts/terrahub.clar"
+depends_on = ["SP2PABAF9FTAJYNFZH93XENAJ8FVY99RRM50D2JG9.nft-trait"]
+
+[repl]
+costs_version = 2
+parser_version = 2
+
+[[orchestrator.batch]]
+transactions = []
+
+[orchestrator]
+fees_version = 2
+costs_version = 2
