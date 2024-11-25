@@ -60,7 +60,7 @@
     (initial-price uint))
     (let
         ((property-id (get-next-id "property"))
-         (current-time (unwrap! (get-block-info? time u0) ERR_INVALID_INPUT)))
+         (current-time block-height))
         (begin
             (asserts! (> size u0) ERR_INVALID_INPUT)
             (asserts! (> initial-price u0) ERR_INVALID_INPUT)
@@ -109,7 +109,7 @@
     (let
         ((property (unwrap! (map-get? properties { property-id: property-id }) ERR_NOT_FOUND))
          (doc-id (get-next-id "document"))
-         (current-time (unwrap! (get-block-info? time u0) ERR_INVALID_INPUT)))
+         (current-time block-height))
         (begin
             (asserts! (is-eq tx-sender (get owner property)) ERR_NOT_AUTHORIZED)
             (map-set property-documents
@@ -207,7 +207,7 @@
     (let
         ((escrow-id (get-next-id "escrow"))
          (property (unwrap! (map-get? properties { property-id: property-id }) ERR_NOT_FOUND))
-         (current-time (unwrap! (get-block-info? time u0) ERR_INVALID_INPUT)))
+         (current-time block-height))
         (begin
             (asserts! (is-eq (get owner property) tx-sender) ERR_NOT_AUTHORIZED)
             (map-set escrows
@@ -241,6 +241,21 @@
                 (merge escrow { status: ESCROW_COMPLETED }))
             (print {
                 event: "escrow-completed",
+                escrow-id: escrow-id
+            })
+            (ok true))))
+
+(define-public (cancel-escrow (escrow-id uint))
+    (let
+        ((escrow (unwrap! (map-get? escrows { escrow-id: escrow-id }) ERR_NOT_FOUND)))
+        (begin
+            (asserts! (is-eq (get status escrow) ESCROW_ACTIVE) ERR_INVALID_STATUS)
+            (asserts! (or (is-eq tx-sender (get buyer escrow)) (is-eq tx-sender (get seller escrow))) ERR_NOT_AUTHORIZED)
+            (map-set escrows
+                { escrow-id: escrow-id }
+                (merge escrow { status: ESCROW_CANCELLED }))
+            (print {
+                event: "escrow-cancelled",
                 escrow-id: escrow-id
             })
             (ok true))))
