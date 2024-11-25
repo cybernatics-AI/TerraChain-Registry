@@ -1,4 +1,8 @@
-;; land-registry-core.clar
+;; terrahub.clar
+;; A comprehensive land registry and property management system
+
+;; Import NFT Trait
+;; (use-trait nft-trait 'SP2PABAF9FTAJYNFZH93XENAJ8FVY99RRM50D2JG9.nft-trait.nft-trait)
 
 ;; Error codes
 (define-constant ERR_NOT_AUTHORIZED (err u100))
@@ -11,6 +15,12 @@
 (define-constant CONTRACT_OWNER tx-sender)
 (define-constant ACTIVE_STATUS "active")
 (define-constant LOCKED_STATUS "locked")
+(define-constant ESCROW_ACTIVE "active")
+(define-constant ESCROW_COMPLETED "completed")
+(define-constant ESCROW_CANCELLED "cancelled")
+
+;; NFT Implementation
+(define-non-fungible-token property-token uint)
 
 ;; Data Maps
 (define-map properties
@@ -39,6 +49,27 @@
     { value: uint }
 )
 
+(define-map token-uris
+    { token-id: uint }
+    { uri: (string-ascii 256) }
+)
+
+(define-map escrows
+    { escrow-id: uint }
+    {
+        property-id: uint,
+        seller: principal,
+        buyer: principal,
+        amount: uint,
+        status: (string-ascii 20),
+        created-at: uint
+    }
+)
+
+;; Data Variables
+(define-data-var contract-admin principal CONTRACT_OWNER)
+(define-data-var contract-paused bool false)
+
 ;; Private Functions
 (define-private (get-next-id (counter-type (string-ascii 20)))
     (let ((current-value (default-to { value: u0 } (map-get? property-counters { counter-type: counter-type }))))
@@ -53,7 +84,10 @@
         (is-eq status ACTIVE_STATUS)
         (is-eq status LOCKED_STATUS)))
 
-;; Public Functions
+(define-private (is-contract-admin)
+    (is-eq tx-sender (var-get contract-admin)))
+
+;; Public Functions - Property Management
 (define-public (register-property 
     (location (string-ascii 100))
     (size uint)
@@ -62,6 +96,7 @@
         ((property-id (get-next-id "property"))
          (current-time block-height))
         (begin
+            (asserts! (not (var-get contract-paused)) ERR_INVALID_STATUS)
             (asserts! (> size u0) ERR_INVALID_INPUT)
             (asserts! (> initial-price u0) ERR_INVALID_INPUT)
             (map-set properties
@@ -74,6 +109,7 @@
                     last-price: initial-price,
                     registration-date: current-time
                 })
+            (try! (nft-mint? property-token property-id tx-sender))
             (print {
                 event: "property-registered",
                 property-id: property-id,
@@ -86,8 +122,10 @@
     (new-owner principal))
     (let ((property (unwrap! (map-get? properties { property-id: property-id }) ERR_NOT_FOUND)))
         (begin
+            (asserts! (not (var-get contract-paused)) ERR_INVALID_STATUS)
             (asserts! (is-eq tx-sender (get owner property)) ERR_NOT_AUTHORIZED)
             (asserts! (is-eq (get status property) ACTIVE_STATUS) ERR_INVALID_STATUS)
+            (try! (nft-transfer? property-token property-id tx-sender new-owner))
             (map-set properties
                 { property-id: property-id }
                 (merge property { owner: new-owner }))
@@ -99,9 +137,17 @@
             })
             (ok true))))
 
-(define-read-only (get-property-details (property-id uint))
-    (ok (unwrap! (map-get? properties { property-id: property-id }) ERR_NOT_FOUND)))
+;; Public Functions - NFT Management
+(define-public (set-token-uri (token-id uint) (token-uri (string-ascii 256)))
+    (begin
+        (asserts! (not (var-get contract-paused)) ERR_INVALID_STATUS)
+        (asserts! (is-eq (some tx-sender) (nft-get-owner? property-token token-id)) ERR_NOT_AUTHORIZED)
+        (map-set token-uris
+            { token-id: token-id }
+            { uri: token-uri })
+        (ok true)))
 
+;; Public Functions - Document Management
 (define-public (add-property-document
     (property-id uint)
     (doc-hash (string-ascii 64))
@@ -111,6 +157,7 @@
          (doc-id (get-next-id "document"))
          (current-time block-height))
         (begin
+            (asserts! (not (var-get contract-paused)) ERR_INVALID_STATUS)
             (asserts! (is-eq tx-sender (get owner property)) ERR_NOT_AUTHORIZED)
             (map-set property-documents
                 { property-id: property-id, doc-id: doc-id }
@@ -126,89 +173,14 @@
             })
             (ok doc-id))))
 
-;; property-token.clar
-
-(impl-trait 'SP2PABAF9FTAJYNFZH93XENAJ8FVY99RRM50D2JG9.nft-trait.nft-trait)
-
-(define-non-fungible-token property-token uint)
-
-(define-map token-uris
-    { token-id: uint }
-    { uri: (string-ascii 256) }
-)
-
-(define-map token-count principal uint)
-
-(define-public (mint-property-token (token-id uint) (recipient principal) (token-uri (string-ascii 256)))
-    (begin
-        (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
-        (try! (nft-mint? property-token token-id recipient))
-        (map-set token-uris
-            { token-id: token-id }
-            { uri: token-uri })
-        (ok true)))
-
-(define-public (transfer-token (token-id uint) (sender principal) (recipient principal))
-    (begin
-        (asserts! (is-eq tx-sender sender) ERR_NOT_AUTHORIZED)
-        (nft-transfer? property-token token-id sender recipient)))
-
-(define-read-only (get-token-uri (token-id uint))
-    (ok (get uri (unwrap! (map-get? token-uris { token-id: token-id }) ERR_NOT_FOUND))))
-
-(define-read-only (get-owner (token-id uint))
-    (ok (nft-get-owner? property-token token-id)))
-
-;; registry-governance.clar
-
-(define-data-var contract-admin principal CONTRACT_OWNER)
-(define-data-var contract-paused bool false)
-
-(define-public (set-admin (new-admin principal))
-    (begin
-        (asserts! (is-eq tx-sender (var-get contract-admin)) ERR_NOT_AUTHORIZED)
-        (var-set contract-admin new-admin)
-        (ok true)))
-
-(define-public (pause-contract)
-    (begin
-        (asserts! (is-eq tx-sender (var-get contract-admin)) ERR_NOT_AUTHORIZED)
-        (var-set contract-paused true)
-        (ok true)))
-
-(define-public (resume-contract)
-    (begin
-        (asserts! (is-eq tx-sender (var-get contract-admin)) ERR_NOT_AUTHORIZED)
-        (var-set contract-paused false)
-        (ok true)))
-
-(define-private (is-contract-admin)
-    (is-eq tx-sender (var-get contract-admin)))
-
-;; escrow.clar
-
-(define-map escrows
-    { escrow-id: uint }
-    {
-        property-id: uint,
-        seller: principal,
-        buyer: principal,
-        amount: uint,
-        status: (string-ascii 20),
-        created-at: uint
-    }
-)
-
-(define-constant ESCROW_ACTIVE "active")
-(define-constant ESCROW_COMPLETED "completed")
-(define-constant ESCROW_CANCELLED "cancelled")
-
+;; Public Functions - Escrow Management
 (define-public (create-escrow (property-id uint) (buyer principal) (amount uint))
     (let
         ((escrow-id (get-next-id "escrow"))
          (property (unwrap! (map-get? properties { property-id: property-id }) ERR_NOT_FOUND))
          (current-time block-height))
         (begin
+            (asserts! (not (var-get contract-paused)) ERR_INVALID_STATUS)
             (asserts! (is-eq (get owner property) tx-sender) ERR_NOT_AUTHORIZED)
             (map-set escrows
                 { escrow-id: escrow-id }
@@ -232,6 +204,7 @@
         ((escrow (unwrap! (map-get? escrows { escrow-id: escrow-id }) ERR_NOT_FOUND))
          (property (unwrap! (map-get? properties { property-id: (get property-id escrow) }) ERR_NOT_FOUND)))
         (begin
+            (asserts! (not (var-get contract-paused)) ERR_INVALID_STATUS)
             (asserts! (is-eq (get status escrow) ESCROW_ACTIVE) ERR_INVALID_STATUS)
             (asserts! (or (is-eq tx-sender (get buyer escrow)) (is-eq tx-sender (get seller escrow))) ERR_NOT_AUTHORIZED)
             (try! (stx-transfer? (get amount escrow) (get buyer escrow) (get seller escrow)))
@@ -249,6 +222,7 @@
     (let
         ((escrow (unwrap! (map-get? escrows { escrow-id: escrow-id }) ERR_NOT_FOUND)))
         (begin
+            (asserts! (not (var-get contract-paused)) ERR_INVALID_STATUS)
             (asserts! (is-eq (get status escrow) ESCROW_ACTIVE) ERR_INVALID_STATUS)
             (asserts! (or (is-eq tx-sender (get buyer escrow)) (is-eq tx-sender (get seller escrow))) ERR_NOT_AUTHORIZED)
             (map-set escrows
@@ -259,3 +233,35 @@
                 escrow-id: escrow-id
             })
             (ok true))))
+
+;; Public Functions - Admin Management
+(define-public (set-admin (new-admin principal))
+    (begin
+        (asserts! (is-eq tx-sender (var-get contract-admin)) ERR_NOT_AUTHORIZED)
+        (var-set contract-admin new-admin)
+        (ok true)))
+
+(define-public (pause-contract)
+    (begin
+        (asserts! (is-eq tx-sender (var-get contract-admin)) ERR_NOT_AUTHORIZED)
+        (var-set contract-paused true)
+        (ok true)))
+
+(define-public (resume-contract)
+    (begin
+        (asserts! (is-eq tx-sender (var-get contract-admin)) ERR_NOT_AUTHORIZED)
+        (var-set contract-paused false)
+        (ok true)))
+
+;; Read-Only Functions
+(define-read-only (get-property-details (property-id uint))
+    (ok (unwrap! (map-get? properties { property-id: property-id }) ERR_NOT_FOUND)))
+
+(define-read-only (get-token-uri (token-id uint))
+    (ok (get uri (unwrap! (map-get? token-uris { token-id: token-id }) ERR_NOT_FOUND))))
+
+(define-read-only (get-owner (token-id uint))
+    (ok (nft-get-owner? property-token token-id)))
+
+(define-read-only (get-escrow-details (escrow-id uint))
+    (ok (unwrap! (map-get? escrows { escrow-id: escrow-id }) ERR_NOT_FOUND)))
